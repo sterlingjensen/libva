@@ -48,7 +48,6 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/time.h>
@@ -91,7 +90,7 @@ struct trace_buf_manager {
 };
 
 struct trace_log_file {
-    pid_t thread_id;
+    pthread_t thread_id;
     int used;
 
     char *fn_log;
@@ -135,7 +134,7 @@ struct trace_context {
 
     unsigned int pts; /* IVF header information */
 
-    pid_t created_thd_id;
+    pthread_t created_thd_id;
 };
 
 struct trace_config_info {
@@ -145,7 +144,7 @@ struct trace_config_info {
     VAProfile trace_profile;
     VAEntrypoint trace_entrypoint;
 
-    pid_t created_thd_id;
+    pthread_t created_thd_id;
 };
 
 struct va_trace {
@@ -288,7 +287,7 @@ static void add_trace_config_info(
 {
     struct trace_config_info *pconfig_info;
     int idx = 0;
-    pid_t thd_id = syscall(__NR_gettid);
+    pthread_t thd_id = pthread_self();
 
     LOCK_RESOURCE(pva_trace);
 
@@ -581,18 +580,18 @@ static int open_tracing_specil_file(
 static int open_tracing_log_file(
     struct va_trace *pva_trace,
     struct trace_log_file *plog_file,
-    pid_t thd_id)
+    pthread_t thd_id)
 {
     FILE *pfp = NULL;
     int new_fn_flag = 0;
 
-    if(plog_file->used && plog_file->thread_id != thd_id) {
+    if(plog_file->used && !pthread_equal(plog_file->thread_id, thd_id)) {
         va_errorMessage(pva_trace->dpy, "Try to open a busy log file occupied by other thread\n");
 
         return -1;
     }
 
-    if(plog_file->thread_id != thd_id) {
+    if(!pthread_equal(plog_file->thread_id, thd_id)) {
         char env_value[1024];
 
         strncpy(env_value, pva_trace->fn_log_env, 1024);
@@ -641,18 +640,18 @@ FAIL:
 
 static int get_log_file_idx_by_thd(
     struct trace_log_files_manager *plog_files_mgr,
-    pid_t thd_id)
+    pthread_t thd_id)
 {
     struct trace_log_file *plog_file = plog_files_mgr->log_file;
     int first_free_idx = MAX_TRACE_THREAD_NUM;
     int i = 0;
 
     for(i = 0;i < MAX_TRACE_THREAD_NUM;i++) {
-        if(plog_file[i].thread_id == thd_id)
+        if(pthread_equal(plog_file[i].thread_id, thd_id)) {
             break;
-        else if(!plog_file[i].used &&
-            first_free_idx >= MAX_TRACE_THREAD_NUM)
+        } else if(!plog_file[i].used && first_free_idx >= MAX_TRACE_THREAD_NUM) {
             first_free_idx = i;
+        }
     }
 
     if(i >= MAX_TRACE_THREAD_NUM)
@@ -666,7 +665,7 @@ static struct trace_log_file *start_tracing2log_file(
 {
     struct trace_log_files_manager *plog_files_mgr = NULL;
     struct trace_log_file *plog_file = NULL;
-    pid_t thd_id = syscall(__NR_gettid);
+    pthread_t thd_id = pthread_self();
     int i = 0;
 
     LOCK_RESOURCE(pva_trace);
@@ -705,11 +704,11 @@ static void refresh_log_file(
     struct trace_context *ptra_ctx)
 {
     struct trace_log_file *plog_file = NULL;
-    pid_t thd_id = syscall(__NR_gettid);
+    pthread_t thd_id = pthread_self();
     int i = 0;
 
     plog_file = ptra_ctx->plog_file;
-    if(plog_file && plog_file->thread_id != thd_id) {
+    if(plog_file && !pthread_equal(plog_file->thread_id, thd_id)) {
         plog_file = start_tracing2log_file(pva_trace);
         if(plog_file) {
             int first_free_idx = -1;
@@ -720,9 +719,9 @@ static void refresh_log_file(
                 if(!ptra_ctx->plog_file_list[i]){
                     if(first_free_idx < 0)
                         first_free_idx = i;
-                }
-                else if(ptra_ctx->plog_file_list[i]->thread_id == thd_id)
+                } else if(pthread_equal(ptra_ctx->plog_file_list[i]->thread_id, thd_id)) {
                     break;
+                }
             }
 
             if(i > MAX_TRACE_THREAD_NUM
@@ -1231,7 +1230,7 @@ static void internal_TraceUpdateContext (
 {
     struct trace_context *trace_ctx = NULL;
     int i = 0, delete = 1;
-    pid_t thd_id = syscall(__NR_gettid);
+    pthread_t thd_id = pthread_self();
 
     if(tra_ctx_idx >= MAX_TRACE_CTX_NUM)
         return;
@@ -1240,12 +1239,9 @@ static void internal_TraceUpdateContext (
 
     trace_ctx = pva_trace->ptra_ctx[tra_ctx_idx];
     if(trace_ctx) {
-        if(!new_trace_ctx &&
-            trace_ctx->created_thd_id != thd_id
-            && !destroy_flag) {
+        if(!new_trace_ctx && !pthread_equal(trace_ctx->created_thd_id, thd_id) && !destroy_flag) {
             delete = 0;
-        }
-        else {
+        } else {
             pva_trace->context_num--;
             pva_trace->ptra_ctx[tra_ctx_idx] = NULL;
         }
